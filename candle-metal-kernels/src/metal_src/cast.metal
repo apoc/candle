@@ -68,6 +68,84 @@ template <typename T, typename U, typename IR = T>
     );
 }
 
+// Vectorized half<->float cast: 4 elements per thread via SIMD.
+// Adjacent threads access adjacent memory (coalesced), and the
+// half4<->float4 conversion is a single SIMD instruction.
+[[host_name("cast_f16_f32_vec4")]]
+[[kernel]] void cast_f16_f32_vec4(
+    constant size_t &dim,
+    device const half *input,
+    device float *output,
+    uint tid [[thread_position_in_grid]]
+) {
+    const uint base = tid * 4;
+    if (base + 4 <= dim) {
+        half4 h = *reinterpret_cast<device const half4 *>(input + base);
+        *reinterpret_cast<device float4 *>(output + base) = float4(h);
+    } else {
+        for (uint i = base; i < min(base + 4u, uint(dim)); i++) {
+            output[i] = static_cast<float>(input[i]);
+        }
+    }
+}
+
+[[host_name("cast_f32_f16_vec4")]]
+[[kernel]] void cast_f32_f16_vec4(
+    constant size_t &dim,
+    device const float *input,
+    device half *output,
+    uint tid [[thread_position_in_grid]]
+) {
+    const uint base = tid * 4;
+    if (base + 4 <= dim) {
+        float4 f = *reinterpret_cast<device const float4 *>(input + base);
+        *reinterpret_cast<device half4 *>(output + base) = half4(f);
+    } else {
+        for (uint i = base; i < min(base + 4u, uint(dim)); i++) {
+            output[i] = static_cast<half>(input[i]);
+        }
+    }
+}
+
+#if defined(__HAVE_BFLOAT__)
+[[host_name("cast_bf16_f32_vec4")]]
+[[kernel]] void cast_bf16_f32_vec4(
+    constant size_t &dim,
+    device const bfloat *input,
+    device float *output,
+    uint tid [[thread_position_in_grid]]
+) {
+    const uint base = tid * 4;
+    if (base + 4 <= dim) {
+        // bfloat4 -> float4 via component-wise cast
+        bfloat4 b = *reinterpret_cast<device const bfloat4 *>(input + base);
+        *reinterpret_cast<device float4 *>(output + base) = float4(b);
+    } else {
+        for (uint i = base; i < min(base + 4u, uint(dim)); i++) {
+            output[i] = static_cast<float>(input[i]);
+        }
+    }
+}
+
+[[host_name("cast_f32_bf16_vec4")]]
+[[kernel]] void cast_f32_bf16_vec4(
+    constant size_t &dim,
+    device const float *input,
+    device bfloat *output,
+    uint tid [[thread_position_in_grid]]
+) {
+    const uint base = tid * 4;
+    if (base + 4 <= dim) {
+        float4 f = *reinterpret_cast<device const float4 *>(input + base);
+        *reinterpret_cast<device bfloat4 *>(output + base) = bfloat4(f);
+    } else {
+        for (uint i = base; i < min(base + 4u, uint(dim)); i++) {
+            output[i] = static_cast<bfloat>(input[i]);
+        }
+    }
+}
+#endif
+
 // Macros to help initialize kernels
 #define init_kernel(name, func, ...) \
   template [[host_name(name)]] [[kernel]] decltype(func<__VA_ARGS__>) func<__VA_ARGS__>;

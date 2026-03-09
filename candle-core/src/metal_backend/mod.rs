@@ -548,8 +548,8 @@ impl BackendStorage for MetalStorage {
                 (DType::U8, DType::I64) => "cast_u8_i64",
                 (DType::U8, DType::U32) => "cast_u8_u32",
 
-                (DType::F32, DType::BF16) => "cast_f32_bf16",
-                (DType::F32, DType::F16) => "cast_f32_f16",
+                (DType::F32, DType::BF16) => "cast_f32_bf16_vec4",
+                (DType::F32, DType::F16) => "cast_f32_f16_vec4",
                 (DType::F32, DType::I64) => "cast_f32_i64",
                 (DType::F32, DType::U32) => "cast_f32_u32",
                 (DType::F32, DType::U8) => "cast_f32_u8",
@@ -561,13 +561,13 @@ impl BackendStorage for MetalStorage {
                 (DType::I64, DType::U8) => "cast_i64_u8",
 
                 (DType::F16, DType::BF16) => "cast_f16_bf16",
-                (DType::F16, DType::F32) => "cast_f16_f32",
+                (DType::F16, DType::F32) => "cast_f16_f32_vec4",
                 (DType::F16, DType::I64) => "cast_f16_i64",
                 (DType::F16, DType::U32) => "cast_f16_u32",
                 (DType::F16, DType::U8) => "cast_f16_u8",
 
                 (DType::BF16, DType::F16) => "cast_bf16_f16",
-                (DType::BF16, DType::F32) => "cast_bf16_f32",
+                (DType::BF16, DType::F32) => "cast_bf16_f32_vec4",
                 (DType::BF16, DType::I64) => "cast_bf16_i64",
                 (DType::BF16, DType::U32) => "cast_bf16_u32",
                 (DType::BF16, DType::U8) => "cast_bf16_u8",
@@ -576,12 +576,20 @@ impl BackendStorage for MetalStorage {
                     crate::bail!("Metal contiguous to_dtype {left:?} {right:?} not implemented")
                 }
             };
+            // Vec4 kernels process 4 elements/thread; ensure grid has ceil(n/4) threads
+            let dtype_size = match (self.dtype, dtype) {
+                (DType::F32, DType::F16)
+                | (DType::F16, DType::F32)
+                | (DType::F32, DType::BF16)
+                | (DType::BF16, DType::F32) => 2,
+                _ => self.dtype.size_in_bytes(),
+            };
             candle_metal_kernels::call_cast_contiguous(
                 &device.device,
                 &encoder,
                 &device.kernels,
                 kernel_name,
-                self.dtype.size_in_bytes(),
+                dtype_size,
                 el_count,
                 src,
                 &buffer,
