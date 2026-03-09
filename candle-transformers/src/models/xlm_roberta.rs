@@ -1,7 +1,7 @@
 use crate::models::with_tracing::{linear, Linear};
 use candle::{DType, Module, Result, Tensor};
 use candle_nn::{
-    embedding, layer_norm, ops::softmax_last_dim, Activation, Embedding, LayerNorm, VarBuilder,
+    embedding, layer_norm, Activation, Embedding, LayerNorm, VarBuilder,
 };
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -155,22 +155,18 @@ impl XLMRobertaSelfAttention {
         };
 
         let query_layer = self.transpose_for_scores(&mixed_query_layer)?;
-        let mut attention_scores = query_layer.matmul(&key_layer.transpose(2, 3)?)?;
-        let scale = 1f64 / f64::sqrt(self.attention_head_size as f64);
-
-        attention_scores = (attention_scores * scale)?;
-        attention_scores = match attention_mask {
-            None => attention_scores,
-            Some(mask) => {
-                attention_scores.broadcast_add(&mask.to_dtype(attention_scores.dtype())?)?
-            }
-        };
-        let attention_probs = softmax_last_dim(&attention_scores)?;
-
-        let context_layer = attention_probs
-            .matmul(&value_layer)?
-            .permute((0, 2, 1, 3))?
-            .contiguous()?;
+        let scale = 1f32 / f32::sqrt(self.attention_head_size as f32);
+        let context_layer = candle_nn::ops::sdpa(
+            &query_layer,
+            &key_layer,
+            &value_layer,
+            attention_mask.as_ref(),
+            false, // non-causal encoder attention
+            scale,
+            1.0, // softcapping disabled
+        )?
+        .permute((0, 2, 1, 3))?
+        .contiguous()?;
         let mut new_context_layer_shape =
             context_layer.dims()[..context_layer.dims().len() - 2].to_vec();
         new_context_layer_shape.push(self.all_head_size);
@@ -358,6 +354,7 @@ impl XLMRobertaEncoder {
 pub struct XLMRobertaModel {
     encoder: XLMRobertaEncoder,
     embeddings: XLMRobertaEmbeddings,
+    num_attention_heads: usize,
 }
 
 impl XLMRobertaModel {
@@ -367,6 +364,7 @@ impl XLMRobertaModel {
         Ok(Self {
             encoder,
             embeddings,
+            num_attention_heads: cfg.num_attention_heads,
         })
     }
 
@@ -380,8 +378,13 @@ impl XLMRobertaModel {
         encoder_attention_mask: Option<&Tensor>,
     ) -> Result<Tensor> {
         let hidden_states = self.embeddings.forward(input_ids, token_type_ids)?;
-        let attention_mask = prepare_4d_attention_mask(attention_mask, DType::F32, None)?
-            .to_device(hidden_states.device())?;
+        let attention_mask = prepare_4d_attention_mask(
+            attention_mask,
+            hidden_states.dtype(),
+            None,
+            self.num_attention_heads,
+        )?
+        .to_device(hidden_states.device())?;
         let hidden_states = self.encoder.forward(
             &hidden_states,
             &attention_mask,
@@ -513,11 +516,13 @@ fn prepare_4d_attention_mask(
     mask: &Tensor,
     dtype: DType,
     tgt_len: Option<usize>,
+    num_heads: usize,
 ) -> Result<Tensor> {
     let bsz = mask.dim(0)?;
     let src_len = mask.dim(1)?;
     let tgt_len = tgt_len.unwrap_or(src_len);
 
+    // Build additive mask at [B, 1, tgt_len, src_len] (compact)
     let expanded_mask = mask
         .unsqueeze(1)?
         .unsqueeze(2)?
@@ -525,14 +530,19 @@ fn prepare_4d_attention_mask(
         .to_dtype(dtype)?;
 
     let inverted_mask = (1.0 - expanded_mask)?;
+    let additive_mask = (inverted_mask * get_dtype_min_val(dtype))?.to_dtype(dtype)?;
 
-    (inverted_mask * get_dtype_min_val(dtype))?.to_dtype(dtype)
+    // Expand to [B, num_heads, tgt_len, src_len] via stride-0 view (no memory copy).
+    // SDPA requires dims to be [B, num_heads, seq, kseq] and handles strides natively.
+    additive_mask.expand((bsz, num_heads, tgt_len, src_len))
 }
 
 fn get_dtype_min_val(dtype: DType) -> f64 {
     match dtype {
         DType::F32 => f32::MIN as f64,
         DType::F64 => f64::MIN,
-        _ => panic!("Unsupported data type"),
+        DType::F16 => -65504.0,
+        DType::BF16 => -3.389e38,
+        _ => panic!("Unsupported data type for attention mask"),
     }
 }
