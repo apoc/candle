@@ -601,6 +601,40 @@ METAL_FUNC void reduce(
     store(result);
 }
 
+// Variant of reduce that accumulates in type A but writes output as type T.
+// Used for F16/BF16 sum where half-precision accumulation loses too much precision.
+template<
+    typename T,
+    typename A,
+    typename OP,
+    ushort BLOCKSIZE,
+    typename Indexer,
+    typename IndexT = typename Indexer::IndexT
+>
+METAL_FUNC void reduce_acc(
+    Indexer indexer,
+    constant IndexT &src_numel,
+    constant IndexT &el_per_block,
+    device const T *src,
+    device T *dst,
+    threadgroup A shared[BLOCKSIZE],
+    uint tid [[ thread_index_in_threadgroup ]],
+    uint dst_id [[ threadgroup_position_in_grid ]]
+) {
+    loader<T, A, OP, BLOCKSIZE, Indexer, IndexT> load;
+    block_reducer<A, OP, BLOCKSIZE> reduce(shared);
+
+    const IndexT offset = dst_id * el_per_block;
+
+    auto value = load(OP::init(), indexer, src_numel, el_per_block, src, offset, tid);
+
+    A result = reduce(value, tid);
+
+    if (tid == 0) {
+        dst[dst_id] = static_cast<T>(result);
+    }
+}
+
 #define reduce_switch(CASE_MACRO, OP, T, R, INDEXER)    \
     switch (max_shared_mem<T>(block_dim)) {             \
         CASE_MACRO(OP, T, R, 1024, INDEXER)             \
@@ -1501,7 +1535,7 @@ ROPE(rope_f16, rope_i_f16, rope_thd_f16, half)
 
 impl_reduce(Sum, fast_sum_f32, float)
 impl_reduce(Sum, fast_sum_u32, uint)
-impl_reduce(Sum, fast_sum_f16, half)
+impl_reduce_acc(Sum, fast_sum_f16, half, float)
 impl_reduce(Sum, fast_sum_u8, uint8_t)
 
 impl_reduce(Mul, fast_mul_f32, float)
@@ -1543,7 +1577,7 @@ impl_arg_reduce(Max, fast_argmax_i64, int64_t)
 #endif
 
 #if defined(__HAVE_BFLOAT__)
-impl_reduce(Sum, fast_sum_bf16, bfloat)
+impl_reduce_acc(Sum, fast_sum_bf16, bfloat, float)
 impl_reduce(Mul, fast_mul_bf16, bfloat)
 impl_reduce(Max, fast_max_bf16, bfloat)
 impl_reduce(Min, fast_min_bf16, bfloat)
