@@ -698,6 +698,56 @@ kernel void NAME##_strided(                         \
 impl_reduce_inner(OP, NAME, T)                      \
 impl_reduce_strided(OP, NAME, T)
 
+// Accumulator-promoted variants: shared memory and reduction use type A,
+// input reads and output writes use type T (e.g. T=half, A=float).
+#define reduce_case_acc(OP, T, A, N, INDEXER)                              \
+case N: {                                                               \
+    threadgroup A shared[N];                                            \
+    reduce_acc<T, A, OP<A>, N>(                                         \
+        INDEXER, src_numel, el_per_block, src, dst, shared, tid, dst_id \
+    );                                                                  \
+    break;                                                              \
+}
+
+#define impl_reduce_acc_inner(OP, NAME, T, A)            \
+kernel void NAME(                                   \
+    constant uint &src_numel,                       \
+    constant uint &num_dims,                        \
+    constant uint *dims,                            \
+    constant uint &el_per_block,                    \
+    device const T *src,                            \
+    device T *dst,                                  \
+    uint tid [[ thread_index_in_threadgroup ]],     \
+    uint dst_id [[ threadgroup_position_in_grid ]], \
+    uint block_dim [[ threads_per_threadgroup ]]    \
+) {                                                 \
+    indexer_t<uint, false> indexer;                 \
+    reduce_switch(reduce_case_acc, OP, T, A, indexer) \
+}
+
+#define impl_reduce_acc_strided(OP, NAME, T, A)          \
+kernel void NAME##_strided(                         \
+    constant uint &src_numel,                       \
+    constant uint &num_dims,                        \
+    constant uint *dims,                            \
+    constant uint *strides,                         \
+    constant uint &el_per_block,                    \
+    device const T *src,                            \
+    device T *dst,                                  \
+    uint tid [[ thread_index_in_threadgroup ]],     \
+    uint dst_id [[ threadgroup_position_in_grid ]], \
+    uint block_dim [[ threads_per_threadgroup ]]    \
+) {                                                 \
+    indexer_t<uint, true> indexer {                 \
+        num_dims, dims, strides, dims[num_dims - 1] \
+    };                                              \
+    reduce_switch(reduce_case_acc, OP, T, A, indexer) \
+}
+
+#define impl_reduce_acc(OP, NAME, T, A)                  \
+impl_reduce_acc_inner(OP, NAME, T, A)                    \
+impl_reduce_acc_strided(OP, NAME, T, A)
+
 template<
     typename T,
     typename ReductionOp,
