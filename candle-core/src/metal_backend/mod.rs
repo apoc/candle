@@ -1406,6 +1406,9 @@ impl BackendStorage for MetalStorage {
         if !ids_l.is_contiguous() {
             return Err(crate::Error::RequiresContiguous { op: "gather" }.bt());
         };
+        if !src_l.is_contiguous() {
+            return Err(crate::Error::RequiresContiguous { op: "gather" }.bt());
+        };
         let ids_el = ids_l.dims()[dim];
         let dst_el = ids_l.shape().elem_count();
         let dtype = self.dtype;
