@@ -115,7 +115,7 @@ impl XLMRobertaSelfAttention {
         new_x_shape[2] = self.num_attention_heads;
         new_x_shape.push(self.attention_head_size);
         let x = x.reshape(new_x_shape)?;
-        x.permute((0, 2, 1, 3))?.contiguous()
+        x.permute((0, 2, 1, 3))
     }
 
     fn forward(
